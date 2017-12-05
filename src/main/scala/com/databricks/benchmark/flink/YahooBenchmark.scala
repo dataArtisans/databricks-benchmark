@@ -129,7 +129,11 @@ object YahooBenchmark {
     // curious how others are achieving a join against a static set. For now we simply include the lookup map in the closure.
     val campaignLookup: Map[String, String] = campaignAdSeq.map(ca => (ca.ad_id, ca.campaign_id)).toMap
 
-    val events: DataStream[Event] = env.addSource(new EventGenerator(campaignAdSeq))
+    val events = if (params.getBoolean("useFixedGenerator", true)) {
+      env.addSource(new EventGenerator(campaignAdSeq))
+    } else {
+      env.addSource(new OriginalEventGenerator(campaignAdSeq))
+    }
 
     events.flatMap(new ThroughputLogger(logFreq))
 

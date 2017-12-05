@@ -7,11 +7,11 @@ import org.apache.flink.streaming.api.functions.source.RichParallelSourceFunctio
 import org.apache.flink.streaming.api.functions.source.SourceFunction.SourceContext
 
 /**
- * Fixed event generator that is not rate-limited.
+ * Original (broken) event generator that is not rate-limited.
  *
  * @param campaigns The ad campaigns to generate events for
  */
-class EventGenerator(
+class OriginalEventGenerator(
     campaigns: Seq[CampaignAd]) extends RichParallelSourceFunction[Event] {
 
   var running = true
@@ -19,13 +19,11 @@ class EventGenerator(
 
   private val adTypeLength = Variables.AD_TYPES.length
   private val eventTypeLength = Variables.EVENT_TYPES.length
-  private val campaingsArray = campaigns.toArray
-  private val campaignLength = campaingsArray.length
+  private val campaignLength = campaigns.length
   private lazy val parallelism = getRuntimeContext().getNumberOfParallelSubtasks()
 
-
   private def generateElement(i: Long, currentTime: Long): Event = {
-    val ad_id = campaingsArray(i % campaignLength toInt).ad_id // ad id for the current event index
+    val ad_id = campaigns(i % campaignLength toInt).ad_id // ad id for the current event index
     val ad_type = Variables.AD_TYPES(i % adTypeLength toInt) // current adtype for event index
     val event_type = Variables.EVENT_TYPES(i % eventTypeLength toInt) // current event type for event index
     Event(
