@@ -1,5 +1,7 @@
-import com.databricks.benchmark.yahoo.YahooBenchmarkRunner
+import com.databricks.benchmark.yahoo.{YahooBenchmark, YahooBenchmarkRunner}
 import com.databricks.spark.LocalKafka
+
+import org.apache.spark.sql.functions._
 import org.apache.spark.sql.SparkSession
 
 /**
@@ -9,6 +11,8 @@ class SparkYahooRunner(
     override val spark: SparkSession,
     kafkaCluster: LocalKafka,
     parallelism: Int) extends YahooBenchmarkRunner {
+
+  import spark.implicits._
 
   require(parallelism >= 1, "Parallelism can't be less than 1")
 
@@ -51,25 +55,38 @@ class SparkYahooRunner(
       tuplesPerSecond: Long,
       recordGenParallelism: Int,
       rampUpTimeSeconds: Int): Unit = {
+
+    val sc = spark.sparkContext
+
     sc.setLocalProperty("spark.scheduler.pool", "yahoo-benchmark")
 
     val millisTime = udf((t: java.sql.Timestamp) => t.getTime)
-    sql(s"set spark.sql.shuffle.partitions = 1")
+    spark.sql(s"set spark.sql.shuffle.partitions = 1")
 
-    stream = YahooBenchmarkRunner.generateStream(spark, campaigns, tuplesPerSecond, parallelism, rampUpTimeSeconds)
+    val query = YahooBenchmarkRunner.generateStream(spark, campaigns, tuplesPerSecond, parallelism, rampUpTimeSeconds)
       .where($"event_type" === "view")
       .select($"ad_id", $"event_time")
       .join(campaigns.toSeq.toDS().cache(), Seq("ad_id"))
       .groupBy(millisTime(window($"event_time", "10 seconds").getField("start")) as 'time_window, $"campaign_id")
       .agg(count("*") as 'count, max('event_time) as 'lastUpdate)
       .select(to_json(struct("*")) as 'value)
-      .writeStream
-      .format("kafka")
-      .option("kafka.bootstrap.servers", kafkaCluster.kafkaNodesString)
-      .option("topic", Variables.OUTPUT_TOPIC)
-      .option("checkpointLocation", s"/tmp/${java.util.UUID.randomUUID()}")
-      .outputMode("update")
-      .start()
+
+    if (kafkaCluster != null) {
+      stream = query
+        .writeStream
+        .format("kafka")
+        .option("kafka.bootstrap.servers", kafkaCluster.kafkaNodesString)
+        .option("topic", Variables.OUTPUT_TOPIC)
+        .option("checkpointLocation", s"/tmp/${java.util.UUID.randomUUID()}")
+        .outputMode("update")
+        .start()
+    } else {
+      stream = query
+        .writeStream
+        .format("console")
+        .outputMode("update")
+        .start()
+    }
 
     sc.setLocalProperty("spark.scheduler.pool", null)
   }
@@ -106,23 +123,111 @@ class SparkYahooRunner(
     val schema = YahooBenchmark.outputSchema.add("lastUpdate", TimestampType)
     val realTimeMs = udf((t: java.sql.Timestamp) => t.getTime)
 
-    spark.read
-      .format("kafka")
-      .option("kafka.bootstrap.servers", kafkaCluster.kafkaNodesString)
-      .option("subscribe", Variables.OUTPUT_TOPIC)
-      .load()
-      .withColumn("result", from_json($"value".cast("string"), schema))
-      .select(
-        $"timestamp" as 'resultOutput,
-        $"result.*")
-      .groupBy($"time_window", $"campaign_id")
-      .agg(max($"resultOutput") as 'resultOutput, max('lastUpdate) as 'lastUpdate)
-      .withColumn("diff", realTimeMs($"resultOutput") - realTimeMs($"lastUpdate"))
-      .selectExpr(
-        "min(diff) as latency_min",
-        "mean(diff) as latency_avg",
-        "percentile_approx(diff, 0.95) as latency_95",
-        "percentile_approx(diff, 0.99) as latency_99",
-        "max(diff) as latency_max")
+    if (kafkaCluster != null) {
+      spark.read
+        .format("kafka")
+        .option("kafka.bootstrap.servers", kafkaCluster.kafkaNodesString)
+        .option("subscribe", Variables.OUTPUT_TOPIC)
+        .load()
+        .withColumn("result", from_json($"value".cast("string"), schema))
+        .select(
+          $"timestamp" as 'resultOutput,
+          $"result.*")
+        .groupBy($"time_window", $"campaign_id")
+        .agg(max($"resultOutput") as 'resultOutput, max('lastUpdate) as 'lastUpdate)
+        .withColumn("diff", realTimeMs($"resultOutput") - realTimeMs($"lastUpdate"))
+        .selectExpr(
+          "min(diff) as latency_min",
+          "mean(diff) as latency_avg",
+          "percentile_approx(diff, 0.95) as latency_95",
+          "percentile_approx(diff, 0.99) as latency_99",
+          "max(diff) as latency_max")
+    } else {
+      spark.range(0, 1)
+        .selectExpr(
+          "1 as latency_min",
+          "1 as latency_avg",
+          "1 as latency_95",
+          "1 as latency_99",
+          "1 as latency_max")
+    }
+  }
+}
+
+object SparkYahooRunner {
+  def main(args: Array[String]): Unit = {
+
+    // Benchmark Configurations - Ideal for Community Edititon
+    val stopSparkOnKafkaNodes = false
+    val stopSparkOnFlinkNodes = false
+    val numKafkaNodes = 1
+    val numFlinkNodes = 1
+    val flinkTaskSlots = 1 // Number of CPUs available for a taskmanager.
+    val runDurationMillis = 100000 // How long to keep each stream running
+    val numTrials = 3
+    val benchmarkResultsBase = "/tmp/streaming/benchmarks" // Where to store the results of the benchmark
+
+    //////////////////////////////////
+    // Event Generation
+    //////////////////////////////////
+    val recordsPerSecond = 5000000
+    val rampUpTimeSeconds = 10 // Ramps up event generation to the specified rate for the given duration to allow the JVM to warm up
+    val recordGenerationParallelism = 1 // Parallelism within Spark to generate data for the Kafka Streams benchmark
+
+    val numCampaigns = 1000 // The number of campaigns to generate events for. Configures the cardinality of the state that needs to be updated
+
+    val kafkaEventsTopicPartitions = 1 // Number of partitions within Kafka for the `events` stream
+    val kafkaOutputTopicPartitions = 1 // Number of partitions within Kafka for the `outout` stream. We write data out to Kafka instead of Redis
+
+    //////////////////////////////////
+    // Kafka Streams
+    //////////////////////////////////
+    // Total number of Kafka Streams applications that will be running.
+    val kafkaStreamsNumExecutors = 1
+    // Number of threads to use within each Kafka Streams application.
+    val kafkaStreamsNumThreadsPerExecutor = 1
+
+    //////////////////////////////////
+    // Flink
+    //////////////////////////////////
+    // Parallelism to use in Flink. Needs to be <= numFlinkNodes * flinkTaskSlots
+    val flinkParallelism = 1
+    // We can have Flink emit updates for windows more frequently to reduce latency by sacrificing throughput. Setting this to 0 means that
+    // we emit updates for windows according to the watermarks, i.e. we will emit the result of a window, once the watermark passes the end
+    // of the window.
+    val flinkTriggerIntervalMillis = 0
+    // How often to log the throughput of Flink in #records. Setting this lower will give us finer grained results, but will sacrifice throughput
+    val flinkThroughputLoggingFreq = 100000
+
+    //////////////////////////////////
+    // Spark
+    //////////////////////////////////
+    val sparkParallelism = 1
+
+    val spark = SparkSession
+      .builder
+      .appName("SparkYahooBenchmark")
+      .master("local[1]")
+      .getOrCreate()
+
+//    val kafkaCluster = LocalKafka.setup(spark, stopSparkOnKafkaNodes = stopSparkOnKafkaNodes, numKafkaNodes = numKafkaNodes)
+
+    val benchmark = new YahooBenchmark(
+      spark,
+      null, //kafkaCluster
+      tuplesPerSecond = recordsPerSecond,
+      recordGenParallelism = recordGenerationParallelism,
+      rampUpTimeSeconds = rampUpTimeSeconds,
+      kafkaEventsTopicPartitions = kafkaEventsTopicPartitions,
+      kafkaOutputTopicPartitions = kafkaOutputTopicPartitions,
+      numCampaigns = numCampaigns,
+      readerWaitTimeMs = runDurationMillis)
+
+    val sparkRunner = new SparkYahooRunner(
+      spark,
+      kafkaCluster = null, //kafkaCluster
+      parallelism = sparkParallelism)
+
+    benchmark.run(sparkRunner, s"$benchmarkResultsBase/spark", numRuns = numTrials)
   }
 }
