@@ -122,6 +122,10 @@ object YahooBenchmark {
 
     val env: StreamExecutionEnvironment = FlinkBenchmarkUtils.getExecutionEnvironment(parallelism)
 
+    if (params.getBoolean("enableObjectReuse", true)) {
+      env.getConfig.enableObjectReuse()
+    }
+
     val campaignAdSeq: Seq[CampaignAd] = generateCampaignMapping(numCampaigns)
 
     // According to https://github.com/apache/flink/blob/master/flink-streaming-java/src/main/java/org/apache/flink/streaming/api/operators/StreamingRuntimeContext.java
