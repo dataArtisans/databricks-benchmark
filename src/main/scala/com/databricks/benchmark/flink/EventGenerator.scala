@@ -2,21 +2,16 @@ package com.databricks.benchmark.flink
 
 import java.util.UUID
 
+import com.databricks.benchmark.yahoo._
 import org.apache.flink.streaming.api.functions.source.RichParallelSourceFunction
 import org.apache.flink.streaming.api.functions.source.SourceFunction.SourceContext
 
-import com.databricks.benchmark.yahoo._
-
 /**
- * Our event generator for Flink.
- * @param tuplesPerSecond Target rate of event generation
- * @param rampUpTimeSeconds Time before we start generating events at full speed. During the first `rampUpTimeSeconds`, data is generated
- *                          at a linearly increasing rate. This allows for the JVM to warm up and allow systems to perform at higher speeds.
+ * Event generator that is not rate-limited.
+ *
  * @param campaigns The ad campaigns to generate events for
  */
 class EventGenerator(
-    tuplesPerSecond: Int,
-    rampUpTimeSeconds: Int,
     campaigns: Seq[CampaignAd]) extends RichParallelSourceFunction[Event] {
 
   var running = true
@@ -42,42 +37,15 @@ class EventGenerator(
   }
 
   override def run(sourceContext: SourceContext[Event]): Unit = {
-    var start = 0L
-    val startTime = System.currentTimeMillis()
-
+    var i = 0L
     while (running) {
-      val emitStartTime = System.currentTimeMillis()
-      val elements = loadPerNode(startTime, emitStartTime)
-      var i = 0
-      while (i < elements) {
-        // We generate batches of elements with the same event timestamp, otherwise getting the timestamp becomes very expensive
-        sourceContext.collect(generateElement((start + i) % 10000, emitStartTime))
-        i += 1
-      }
-      start += elements
-      // Sleep for the rest of timeslice if needed
-      val emitTime = System.currentTimeMillis() - emitStartTime
-      if (emitTime < 1000) {
-        Thread.sleep(1000 - emitTime);
-      }
+      sourceContext.collect(generateElement(i % 10000, System.currentTimeMillis()))
+      i += 1
     }
     sourceContext.close()
   }
 
   override def cancel(): Unit = {
     running = false
-  }
-
-
-  /**
-   * The amount of records to produce for a second given the parallelism, ramp up time and current time.
-   */
-  private def loadPerNode(startTime: Long, currentTime: Long): Int = {
-    val timeSinceStart = (currentTime - startTime) / 1000
-    if (timeSinceStart < rampUpTimeSeconds) {
-      Math.rint(timeSinceStart * 1.0 / rampUpTimeSeconds * tuplesPerSecond / parallelism).toInt
-    } else {
-      tuplesPerSecond / parallelism
-    }
   }
 }
