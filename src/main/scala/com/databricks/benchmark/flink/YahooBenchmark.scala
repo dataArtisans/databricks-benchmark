@@ -65,10 +65,10 @@ object YahooBenchmark {
   /**
    * A logger that prints out the number of records processed and the timestamp, which we can later use for throughput calculation.
    */
-  class ThroughputLogger(logFreq: Long) extends FlatMapFunction[Event, Integer] {
+  class ThroughputLogger(logFreq: Long) extends FlatMapFunction[Event, Event] {
     private var totalReceived: Long = 0
 
-    override def flatMap(element: Event, collector: Collector[Integer]): Unit = {
+    override def flatMap(element: Event, collector: Collector[Event]): Unit = {
       if (totalReceived == 0) {
         println(s"ThroughputLogging:${System.currentTimeMillis()},${totalReceived}")
       }
@@ -76,6 +76,7 @@ object YahooBenchmark {
       if (totalReceived % logFreq == 0) {
         println(s"ThroughputLogging:${System.currentTimeMillis()},${totalReceived}")
       }
+      collector.collect(element)
     }
   }
 
@@ -139,9 +140,8 @@ object YahooBenchmark {
       env.addSource(new OriginalEventGenerator(campaignAdSeq))
     }
 
-    events.flatMap(new ThroughputLogger(logFreq))
-
     val windowedEvents: WindowedStream[(String, String, Timestamp), Tuple, TimeWindow] = events
+      .flatMap(new ThroughputLogger(logFreq))
       .filter(_.event_type == "view")
       .flatMap(new StaticJoinMapper(campaignLookup))
       .assignTimestamps(new AdTimestampExtractor())
