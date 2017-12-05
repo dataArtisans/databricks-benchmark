@@ -159,7 +159,10 @@ object YahooBenchmark {
       }
     )
 
-    FlinkBenchmarkUtils.writeJsonStream(windowedCounts, outputTopic, props)
+    // only write to kafka when specified
+    if (params.has("bootstrap.servers")) {
+      FlinkBenchmarkUtils.writeJsonStream(windowedCounts, outputTopic, props)
+    }
 
     env.execute("Flink Yahoo Benchmark")
   }
