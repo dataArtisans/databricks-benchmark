@@ -66,7 +66,9 @@ object YahooBenchmark {
    * A logger that prints out the number of records processed and the timestamp, which we can later use for throughput calculation.
    */
   class ThroughputLogger(logFreq: Long) extends FlatMapFunction[Event, Event] {
-    private var totalReceived: Long = 0
+    private var lastTotalReceived: Long = 0L
+    private var lastTime: Long = 0L
+    private var totalReceived: Long = 0L
 
     override def flatMap(element: Event, collector: Collector[Event]): Unit = {
       if (totalReceived == 0) {
@@ -74,7 +76,12 @@ object YahooBenchmark {
       }
       totalReceived += 1
       if (totalReceived % logFreq == 0) {
+        val currentTime = System.currentTimeMillis()
+        println(s"Throughput:${(totalReceived - lastTotalReceived) / (currentTime - lastTime) * 1000.0d}")
+        lastTime = currentTime
+        lastTotalReceived = totalReceived
         println(s"ThroughputLogging:${System.currentTimeMillis()},${totalReceived}")
+
       }
       collector.collect(element)
     }
