@@ -23,26 +23,46 @@ class EventGenerator(
   private val campaignLength = campaingsArray.length
   private lazy val parallelism = getRuntimeContext().getNumberOfParallelSubtasks()
 
-
-  private def generateElement(i: Long, currentTime: Long): Event = {
-    val ad_id = campaingsArray(i % campaignLength toInt).ad_id // ad id for the current event index
-    val ad_type = Variables.AD_TYPES(i % adTypeLength toInt) // current adtype for event index
-    val event_type = Variables.EVENT_TYPES(i % eventTypeLength toInt) // current event type for event index
-    Event(
-      uuid, // random user, irrelevant
-      uuid, // random page, irrelevant
-      ad_id,
-      ad_type,
-      event_type,
-      new java.sql.Timestamp(currentTime),
-      "255.255.255.255") // generic ipaddress, irrelevant
-  }
-
   override def run(sourceContext: SourceContext[Event]): Unit = {
-    var i = 0L
+    var i = 0
+    var j = 0
+    var k = 0
+    var t = 0
+    var ts = System.currentTimeMillis()
+
     while (running) {
-      sourceContext.collect(generateElement(i % 10000, System.currentTimeMillis()))
       i += 1
+      j += 1
+      k += 1
+      t += 1
+      if (i >= campaignLength) {
+        i = 0
+      }
+      if (j >= adTypeLength) {
+        j = 0
+      }
+      if (k >= eventTypeLength) {
+        k = 0
+      }
+      if (t >= 1000) {
+        t = 0
+        ts = System.currentTimeMillis()
+      }
+
+      val ad_id = campaingsArray(i).ad_id // ad id for the current event index
+      val ad_type = Variables.AD_TYPES(j) // current adtype for event index
+      val event_type = Variables.EVENT_TYPES(k) // current event type for event index
+
+      val event = Event(
+        uuid, // random user, irrelevant
+        uuid, // random page, irrelevant
+        ad_id,
+        ad_type,
+        event_type,
+        new java.sql.Timestamp(ts),
+        "255.255.255.255") // generic ipaddress, irrelevant
+      sourceContext.collect(event)
+
     }
     sourceContext.close()
   }
